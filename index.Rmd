@@ -8,26 +8,134 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+# Predicting Type of Barbell Lift
 
-You should create a report describing:
-
-## How I built the model 
-
-## How I used cross validation
-
-## What you think the expected out of sample error is
-
-### Why I made the choices I did
+In a scientific study, six participants performed a variety of barbell exercises while wearing accelerometers.  The accelerometers recorded data about how the exercise was performed.  In this project, I use the data to predict which of the five exercises, indicated in the data only as A, B, C, D, and E, is being performed.  I would like to thank the publishers of the study for use of their data.  See http://groupware.les.inf.puc-rio.br/har for more.
 
 
 ## Executive Summary
 
-## Expoloratory Analysis
+This report is a brief narrative on how I used the data to make the predictions.  It essentially outlines my thought processes as I prepare the data for model fitting, fit the model, and then predict the outcome. As the narrative is as much about my own decisions as it is about the model building and prediction, I will use the first person.
 
-## Model Exploration and Selection
 
-## Residuals and Diagnostics
+## Building the Model
 
-## Interpretation
+The model was built as follows.  First some preliminary work setting directories and acquiring data.
+
+```{r prelim, message = FALSE}
+# Establish Working Directory
+current_path <- "~/Data Science/ML/project/practicalmachinelearning"
+setwd(current_path)
+
+# Load relevant packages.
+library(caret)      # to build the model
+library(parallel)   # for parallel processing
+library(doParallel) # for parallel processing
+
+# Store the data URLs.
+trainingURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testingURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Download the data, if not yet done.
+if(!file.exists("pml-training.csv")){
+  download.file(trainingURL, "pml-training.csv")
+}
+
+if(!file.exists("pml-testing.csv")){
+  download.file(testingURL, "pml-testing.csv")
+  time_data_downloaded <- Sys.time()
+}
+
+# Load the data into R, if not yet done.
+if(!exists("training")){
+  training <- read.csv("pml-training.csv")
+}
+
+if(!exists("testing")){
+  testing <- read.csv("pml-testing.csv")
+}
+```
+
+### Missing Values
+Some of the variables, 100 out of 160, had missing values (NAs).  In considering options for how to handle them, while I first considered methods of imputing the missing values, I instead applied an Occam's Razor style approach to see if a good model could be built with the complete variables alone.  Also, the first six variables were user names and timestamps and such,  which did not very well pertain to the model fit, so I disposed of those too. 
+
+```{r prelim2, message = FALSE}
+# Remove variables with NAs or irrelavent.
+NAs <- sapply(testing, function(x) sum(is.na(x)))
+hasNAs <- which(NAs > 0)
+trainingTidy1 <- training[-hasNAs]
+trainingTidy1B <- trainingTidy1[, -(1:6)]
+```
+
+### Cross Validation Scheme
+
+Before building a model to use on the testing data, I decided to set aside 20% of the observations for cross validation.  Later, I use 10-fold cross validation in building the model as well.
+
+```{r cross_validation, message = FALSE}
+# Create training & testing data sets for cross validation
+set.seed(95014)
+inTraining <- createDataPartition(trainingTidy1B$classe, 
+                                  p = .8, list = FALSE)
+trainingCV <- trainingTidy1B[inTraining,]
+testingCV <- trainingTidy1B[-inTraining,]
+
+# Set up training run for x / y syntax because model format performs poorly
+x <- trainingTidy1B[,-54]
+y <- trainingTidy1B[,54]
+
+```
+
+### Parallel Processing and Model Building
+
+As suggested in the discussion forums for this assignment, I decided to use parallel processing to speed up the model building.  Small personal note: this proved to be of huge significance.  At the time I started work on this project my good computer, a new i7 ThinkPad with 16GB RAM, was in the shop for repairs.  I originally trained the model on my back up computer, a slower old Dell Vostro with only 4GB RAM.  This took just over 104 minutes to complete.  When the ThinkPad came back from repair, it built the same model in 12 minutes.
+
+The model itself is a random forest.  I tried a bit with linear models and principal component analysis, but nothing worked as well as random forest.  See below for how the model was constructed.  Note the ten-fold cross validation sampling.  I saved the model to disk so I would not have to build it again each time I wanted to change subsequent code.
+
+```{r parallel_processing, message = FALSE}
+# Set up parallel processing.
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel = TRUE)
+
+# Create the model, if not yet done. (method = "rf")
+if(!exists("trainModelCV")){
+  if(file.exists("trainModelCV.RData")){
+    load("trainModelCV.RData")
+  } else {
+#########################################################    
+# Here is where the random forest model is actually
+# constructed.
+        trainModelCV <- train(x, y, 
+                          method="rf", 
+                          data = trainingTidy1B, 
+                          trControl = fitControl
+                          )
+#########################################################
+    save(trainModelCV, file = "trainModelCV.RData")
+  }
+}
+
+# End parallel processing.
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Cross Validation
+
+Once the model is trained, I tested it first against the separate cross validation dataset in order to get a sense of the out of sample error.  The results surprised me.
+
+```{r prediction, message = FALSE}
+# Assess model performance on first testing set for cross validation.
+pred <- predict(trainModelCV, testingCV)
+table(pred, testingCV$classe)
+```
+
+The prediction was perfect.  Frankly I did not expect that, especially given how many variables were simply discarded due to missing values. However the out-of-sample error rate in this case was 0%, and sure enough model's prediction did prove to be 100% correct on the actual test data (the quiz questions) as well.
+
 
 ## Conclusion
+
+Random Forest is an effective model building strategy in the right situtions.  While discarding incomplete data solely to get the data and model down to a minimal working setup will surely not always be an effective strategy, in this case it was. 

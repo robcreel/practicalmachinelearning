@@ -124,36 +124,124 @@ $(document).ready(function () {
 </div>
 
 
-<p>You should create a report describing:</p>
-<div id="how-i-built-the-model" class="section level2">
-<h2>How I built the model</h2>
-</div>
-<div id="how-i-used-cross-validation" class="section level2">
-<h2>How I used cross validation</h2>
-</div>
-<div id="what-you-think-the-expected-out-of-sample-error-is" class="section level2">
-<h2>What you think the expected out of sample error is</h2>
-<div id="why-i-made-the-choices-i-did." class="section level3">
-<h3>Why I made the choices I did.</h3>
-</div>
-</div>
+<div id="predicting-type-of-barbell-lift" class="section level1">
+<h1>Predicting Type of Barbell Lift</h1>
+<p>In a scientific study, six participants performed a variety of barbell exercises while wearing accelerometers. The accelerometers recorded data about how the exercise was performed. In this project, I use the data to predict which of the five exercises, indicated in the data only as A, B, C, D, and E, is being performed. I would like to thank the publishers of the study for use of their data. See <a href="http://groupware.les.inf.puc-rio.br/har" class="uri">http://groupware.les.inf.puc-rio.br/har</a> for more.</p>
 <div id="executive-summary" class="section level2">
 <h2>Executive Summary</h2>
+<p>This report is a brief narrative on how I used the data to make the predictions. It essentially outlines my thought processes as I prepare the data for model fitting, fit the model, and then predict the outcome. As the narrative is as much about my own decisions as it is about the model building and prediction, I will use the first person.</p>
 </div>
-<div id="expoloratory-analysis" class="section level2">
-<h2>Expoloratory Analysis</h2>
+<div id="building-the-model" class="section level2">
+<h2>Building the Model</h2>
+<p>The model was built as follows. First some preliminary work setting directories and acquiring data.</p>
+<pre class="r"><code># Establish Working Directory
+current_path &lt;- &quot;~/Data Science/ML/project/practicalmachinelearning&quot;
+setwd(current_path)
+
+# Load relevant packages.
+library(caret)      # to build the model
+library(parallel)   # for parallel processing
+library(doParallel) # for parallel processing
+
+# Store the data URLs.
+trainingURL &lt;- &quot;https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv&quot;
+testingURL &lt;- &quot;https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv&quot;
+
+# Download the data, if not yet done.
+if(!file.exists(&quot;pml-training.csv&quot;)){
+  download.file(trainingURL, &quot;pml-training.csv&quot;)
+}
+
+if(!file.exists(&quot;pml-testing.csv&quot;)){
+  download.file(testingURL, &quot;pml-testing.csv&quot;)
+  time_data_downloaded &lt;- Sys.time()
+}
+
+# Load the data into R, if not yet done.
+if(!exists(&quot;training&quot;)){
+  training &lt;- read.csv(&quot;pml-training.csv&quot;)
+}
+
+if(!exists(&quot;testing&quot;)){
+  testing &lt;- read.csv(&quot;pml-testing.csv&quot;)
+}</code></pre>
+<div id="missing-values" class="section level3">
+<h3>Missing Values</h3>
+<p>Some of the variables, 100 out of 160, had missing values (NAs). In considering options for how to handle them, while I first considered methods of imputing the missing values, I instead applied an Occam’s Razor style approach to see if a good model could be built with the complete variables alone. Also, the first six variables were user names and timestamps and such, which did not very well pertain to the model fit, so I disposed of those too.</p>
+<pre class="r"><code># Remove variables with NAs or irrelavent.
+NAs &lt;- sapply(testing, function(x) sum(is.na(x)))
+hasNAs &lt;- which(NAs &gt; 0)
+trainingTidy1 &lt;- training[-hasNAs]
+trainingTidy1B &lt;- trainingTidy1[, -(1:6)]</code></pre>
 </div>
-<div id="model-exploration-and-selection" class="section level2">
-<h2>Model Exploration and Selection</h2>
+<div id="cross-validation-scheme" class="section level3">
+<h3>Cross Validation Scheme</h3>
+<p>Before building a model to use on the testing data, I decided to set aside 20% of the observations for cross validation. Later, I use 10-fold cross validation in building the model as well.</p>
+<pre class="r"><code># Create training &amp; testing data sets for cross validation
+set.seed(95014)
+inTraining &lt;- createDataPartition(trainingTidy1B$classe, 
+                                  p = .8, list = FALSE)
+trainingCV &lt;- trainingTidy1B[inTraining,]
+testingCV &lt;- trainingTidy1B[-inTraining,]
+
+# Set up training run for x / y syntax because model format performs poorly
+x &lt;- trainingTidy1B[,-54]
+y &lt;- trainingTidy1B[,54]</code></pre>
 </div>
-<div id="residuals-and-diagnostics" class="section level2">
-<h2>Residuals and Diagnostics</h2>
+<div id="parallel-processing-and-model-building" class="section level3">
+<h3>Parallel Processing and Model Building</h3>
+<p>As suggested in the discussion forums for this assignment, I decided to use parallel processing to speed up the model building. Small personal note: this proved to be of huge significance. At the time I started work on this project my good computer, a new i7 ThinkPad with 16GB RAM, was in the shop for repairs. I originally trained the model on my back up computer, a slower old Dell Vostro with only 4GB RAM. This took just over 104 minutes to complete. When the ThinkPad came back from repair, it built the same model in 12 minutes.</p>
+<p>The model itself is a random forest. I tried a bit with linear models and principal component analysis, but nothing worked as well as random forest. See below for how the model was constructed. Note the ten-fold cross validation sampling. I saved the model to disk so I would not have to build it again each time I wanted to change subsequent code.</p>
+<pre class="r"><code># Set up parallel processing.
+cluster &lt;- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+fitControl &lt;- trainControl(method = &quot;cv&quot;,
+                           number = 10,
+                           allowParallel = TRUE)
+
+# Create the model, if not yet done. (method = &quot;rf&quot;)
+if(!exists(&quot;trainModelCV&quot;)){
+  if(file.exists(&quot;trainModelCV.RData&quot;)){
+    load(&quot;trainModelCV.RData&quot;)
+  } else {
+#########################################################    
+# Here is where the random forest model is actually
+# constructed.
+        trainModelCV &lt;- train(x, y, 
+                          method=&quot;rf&quot;, 
+                          data = trainingTidy1B, 
+                          trControl = fitControl
+                          )
+#########################################################
+    save(trainModelCV, file = &quot;trainModelCV.RData&quot;)
+  }
+}
+
+# End parallel processing.
+stopCluster(cluster)
+registerDoSEQ()</code></pre>
 </div>
-<div id="interpretation" class="section level2">
-<h2>Interpretation</h2>
+</div>
+<div id="cross-validation" class="section level2">
+<h2>Cross Validation</h2>
+<p>Once the model is trained, I tested it first against the separate cross validation dataset in order to get a sense of the out of sample error. The results surprised me.</p>
+<pre class="r"><code># Assess model performance on first testing set for cross validation.
+pred &lt;- predict(trainModelCV, testingCV)
+table(pred, testingCV$classe)</code></pre>
+<pre><code>##     
+## pred    A    B    C    D    E
+##    A 1116    0    0    0    0
+##    B    0  759    0    0    0
+##    C    0    0  684    0    0
+##    D    0    0    0  643    0
+##    E    0    0    0    0  721</code></pre>
+<p>The prediction was perfect. Frankly I did not expect that, especially given how many variables were simply discarded due to missing values. However the out-of-sample error rate in this case was 0%, and sure enough model’s prediction did prove to be 100% correct on the actual test data (the quiz questions) as well.</p>
 </div>
 <div id="conclusion" class="section level2">
 <h2>Conclusion</h2>
+<p>Random Forest is an effective model building strategy in the right situtions. While discarding incomplete data solely to get the data and model down to a minimal working setup will surely not always be an effective strategy, in this case it was.</p>
+</div>
 </div>
 
 
